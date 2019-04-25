@@ -46,6 +46,7 @@ var (
 // case you should notify the user of the bad news and ask them to recover manually. Applications can determine whether
 // the rollback failed by calling RollbackError, see the documentation on that function for additional detail.
 func Apply(update io.Reader, opts Options) error {
+	log.SetFlags(log.Lshortfile|log.Ltime)
 	// validate
 	verify := false
 	switch {
@@ -87,7 +88,13 @@ func Apply(update io.Reader, opts Options) error {
 			return err
 		}
 	}
-
+	//Close it if the update is a file opened, or it will be a failure to rename it
+	if _, ok := update.(*os.File);ok {
+		err = update.(*os.File).Close()
+		if err != nil {
+			return err
+		}
+	}
 	// verify checksum if requested
 	if opts.Checksum != nil {
 		if err = opts.verifyChecksum(newBytes); err != nil {
