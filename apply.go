@@ -46,7 +46,6 @@ var (
 // case you should notify the user of the bad news and ask them to recover manually. Applications can determine whether
 // the rollback failed by calling RollbackError, see the documentation on that function for additional detail.
 func Apply(update io.Reader, opts Options) error {
-	log.SetFlags(log.Lshortfile|log.Ltime)
 	// validate
 	verify := false
 	switch {
@@ -88,13 +87,7 @@ func Apply(update io.Reader, opts Options) error {
 			return err
 		}
 	}
-		// if the 'update' is a *os.File, cause you want to get your updated file from a local
-	if _, ok := update.(*os.File);ok {
-		err = update.(*os.File).Close()
-		if err != nil {
-			return err
-		}
-	}
+
 	// verify checksum if requested
 	if opts.Checksum != nil {
 		if err = opts.verifyChecksum(newBytes); err != nil {
@@ -108,7 +101,7 @@ func Apply(update io.Reader, opts Options) error {
 		}
 	}
 
-	// get the directory the executable exists in
+	// get the directory the file/dir exists in
 	updateDir := filepath.Dir(opts.TargetPath)
 	filename := filepath.Base(opts.TargetPath)
 
@@ -118,8 +111,6 @@ func Apply(update io.Reader, opts Options) error {
 	if err != nil {
 		return err
 	}
-	defer fp.Close()
-
 	_, err = io.Copy(fp, bytes.NewReader(newBytes))
 	if err != nil {
 		return err
@@ -142,15 +133,44 @@ func Apply(update io.Reader, opts Options) error {
 	// delete any existing old exec file - this is necessary on Windows for two reasons:
 	// 1. after a successful update, Windows can't remove the .old file because the process is still running
 	// 2. windows rename operations fail if the destination file already exists
-	_ = os.Remove(oldPath)
 
-	// move the existing executable to a new file in the same directory
-	err = os.Rename(opts.TargetPath, oldPath)
+	// Need to determine the type of the subject, it is a file or a directory
+	// And if it is a existed file, delete it
+	fileInfo, err := os.Stat(oldPath)
 	if err != nil {
-		return err
+		if os.IsExist(err) && !fileInfo.IsDir() {
+			err = os.Remove(oldPath)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	// move the existing file to a new file in the specific directory
+	fileInfo, err = os.Stat(opts.TargetPath)
+	if err != nil {
+		//if the file does not exist, just add it to the path
+		fTemp, err := os.Create(opts.TargetPath)
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(fTemp, update)
+		if err != nil {
+			return err
+		}
+		err = fTemp.Close()
+		if err != nil {
+			return err
+		}
+	} else {
+		//If exists, just replace
+		err = os.Rename(opts.TargetPath, oldPath)
+		if err != nil {
+			log.Println(err.Error(), opts.TargetPath, oldPath)
+			return err
+		}
 	}
 
-	// move the new exectuable in to become the new program
+	// move the new file in
 	err = os.Rename(newPath, opts.TargetPath)
 
 	if err != nil {
@@ -160,16 +180,18 @@ func Apply(update io.Reader, opts Options) error {
 		// moved the existing binary to a new location, but we couldn't move the new
 		// binary to take its place. That means there is no file where the current executable binary
 		// used to be!
-		// Try to rollback by restoring the old binary to its original path.
+		// Try to rollback by restoring the old to its original path.
+		log.Println(err.Error())
 		rerr := os.Rename(oldPath, opts.TargetPath)
 		if rerr != nil {
+			log.Println(err.Error())
 			return &rollbackErr{err, rerr}
 		}
 
 		return err
 	}
 
-	// move successful, remove the old binary if needed
+	// move successful, remove the old file if needed
 	if removeOld {
 		errRemove := os.Remove(oldPath)
 
@@ -254,7 +276,10 @@ func (o *Options) CheckPermissions() error {
 	if err != nil {
 		return err
 	}
-	fp.Close()
+	err = fp.Close()
+	if err != nil {
+		return err
+	}
 
 	_ = os.Remove(newPath)
 	return nil
@@ -291,7 +316,12 @@ func (o *Options) applyPatch(patch io.Reader) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer old.Close()
+	defer func() {
+		err := old.Close()
+		if err != nil {
+			panic(err)
+		}
+	}()
 
 	// apply the patch
 	var applied bytes.Buffer
